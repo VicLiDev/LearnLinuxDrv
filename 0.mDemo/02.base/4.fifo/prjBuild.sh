@@ -8,4 +8,5 @@
 
 make
 make init
+make test
 make exit

@@ -27,6 +27,26 @@ static char *exit_desc = "default exit desc";
 module_param(init_desc, charp, S_IRUGO);
 module_param(exit_desc, charp, S_IRUGO);
 
+#define FIFO_SIZE2   1024  // 必须是2的幂
+
+static DEFINE_KFIFO(my_fifo2, char, FIFO_SIZE2);
+static DEFINE_SPINLOCK(fifo_lock);
+/*
+ * 或者动态初始化
+ *
+ * // 定义 kfifo 的大小
+ * #define FIFO_SIZE 128
+ * // 声明 kfifo 变量
+ * struct kfifo my_fifo;
+ * // 缓冲区，用于存储 kfifo 中的数据
+ * char buffer[FIFO_SIZE];
+ * // 初始化 kfifo，传入缓冲区、大小和标志
+ * if (kfifo_init(&my_fifo, buffer, sizeof(buffer)) != 0) {
+ *     printk(KERN_ERR "Failed to initialize kfifo\n");
+ *     return -1;
+ * }
+ */
+
 static int m_chrdev_open(struct inode *inode, struct file *file);
 static int m_chrdev_release(struct inode *inode, struct file *file);
 static long m_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -77,64 +97,88 @@ static int m_chrdev_release(struct inode *inode, struct file *file)
     return 0;
 }
 
+
+static int fifo_demo(void)
+{
+    char inbuf[] = "KFIFO_DEMO";
+    char outbuf[32] = {};
+    char ch;
+    unsigned int copied, i;
+
+    spin_lock(&fifo_lock);
+
+    // 1. 重置 FIFO
+    kfifo_reset(&my_fifo2);
+
+    // 2. 使用 kfifo_in() 将字符串写入 FIFO
+    copied = kfifo_in(&my_fifo2, inbuf, sizeof(inbuf));
+    pr_info("kfifo_in: inserted %u bytes: %s\n", copied, inbuf);
+
+    // 3. 使用 kfifo_out() 从 FIFO 中读取数据
+    copied = kfifo_out(&my_fifo2, outbuf, sizeof(outbuf));
+    pr_info("kfifo_out: got %u bytes: %s\n", copied, outbuf);
+
+    // 4. 使用 kfifo_put() 插入单个字符
+    for (i = 0; i < 5; i++) {
+        ch = 'a' + i;
+        if (kfifo_put(&my_fifo2, ch))
+            pr_info("kfifo_put: put %c\n", ch);
+    }
+
+    // 5. 使用 kfifo_peek() 看第一个字符
+    if (kfifo_peek(&my_fifo2, &ch))
+        pr_info("kfifo_peek: %c\n", ch);
+
+    // 6. 使用 kfifo_get() 逐个取出
+    while (kfifo_get(&my_fifo2, &ch))
+        pr_info("kfifo_get: got %c\n", ch);
+
+    spin_unlock(&fifo_lock);
+    return 0;
+}
+
 static long m_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     printk("M_CHRDEV: Device ioctl\n");
+
+    fifo_demo();
+
     return 0;
 }
 
 static ssize_t m_chrdev_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
-    uint8_t *data = "Hello from the kernel world!\n";
-    size_t datalen = strlen(data);
+    unsigned int copied;
+    int ret;
 
     printk("Reading device: %d\n", MINOR(file->f_path.dentry->d_inode->i_rdev));
 
-    if (count > datalen) {
-        count = datalen;
-    }
+    if (kfifo_is_empty(&my_fifo2))
+        return 0;
 
-    if (copy_to_user(buf, data, count)) {
-        return -EFAULT;
-    }
+    spin_lock(&fifo_lock);
+    ret = kfifo_to_user(&my_fifo2, buf, count, &copied);
+    spin_unlock(&fifo_lock);
 
-    return count;
+    return ret ? ret : copied;
 }
 
 static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t count, loff_t *offset)
 {
-    size_t maxdatalen = 30, ncopied;
-    uint8_t databuf[30];
+    unsigned int copied;
+    int ret;
 
     printk("Writing device: %d\n", MINOR(file->f_path.dentry->d_inode->i_rdev));
 
-    if (count < maxdatalen) {
-        maxdatalen = count;
-    }
+    if (kfifo_is_full(&my_fifo2))
+        return -ENOSPC;
 
-    ncopied = copy_from_user(databuf, buf, maxdatalen);
+    spin_lock(&fifo_lock);
+    ret = kfifo_from_user(&my_fifo2, buf, count, &copied);
+    spin_unlock(&fifo_lock);
 
-    if (ncopied == 0) {
-        printk("Copied %zd bytes from the user\n", maxdatalen);
-    } else {
-        printk("Could't copy %zd bytes from the user\n", ncopied);
-    }
-
-    databuf[maxdatalen] = 0;
-
-    printk("Data from the user: %s\n", databuf);
-
-    return count;
+    return ret ? ret : copied;
 }
-
-/* 定义 kfifo 的大小 */
-#define FIFO_SIZE 128
-
-/* 声明 kfifo 变量 */
-struct kfifo my_fifo;
-
-/* 缓冲区，用于存储 kfifo 中的数据 */
-char buffer[FIFO_SIZE];
 
 static int __init m_chr_init(void)
 {
@@ -175,30 +219,6 @@ static int __init m_chr_init(void)
 
         /* create device node /dev/m_chrdev_x where "x" is "idx", equal to the Minor number */
         device_create(m_chrdev_class, NULL, MKDEV(dev_major, idx), NULL, "m_chrdev_%d", idx);
-    }
-
-    /* 初始化 kfifo，传入缓冲区、大小和标志 */
-    if (kfifo_init(&my_fifo, buffer, sizeof(buffer)) != 0) {
-        printk(KERN_ERR "Failed to initialize kfifo\n");
-        return -1;
-    }
-
-    /* 向 kfifo 写入数据 */
-    char data_to_write[] = "Hello, kfifo!";
-    size_t len = strlen(data_to_write);
-    if (kfifo_in(&my_fifo, data_to_write, len) != len) {
-        printk(KERN_ERR "Failed to write to kfifo\n");
-        return -1;
-    }
-
-    /* 从 kfifo 读取数据 */
-    char read_buffer[len + 1]; /* 确保有足够的空间存储数据（包括空字符） */
-    size_t read_len = kfifo_out(&my_fifo, read_buffer, len);
-    if (read_len == len) {
-        read_buffer[read_len] = '\0'; /* 添加空字符以形成字符串 */
-        printk(KERN_INFO "======> Read from kfifo: %s\n", read_buffer);
-    } else {
-        printk(KERN_ERR "Failed to read from kfifo\n");
     }
 
     return 0;
