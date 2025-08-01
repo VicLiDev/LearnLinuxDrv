@@ -117,8 +117,7 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
      * 因此，worker、work、kthread之间的关系如下：
      * 1. worker 与 kthread 绑定，这里的线程函数一般固定为kthread_worker_fn，是
      *    kernel已经定义好的函数，可以理解为worker的调度函数，这里调用 kthread_run
-     *    的话会有问题，理解不调用的话应该会有一个默认的类似 kthread_worker_fn的
-     *    函数，这可能跟kernel的版本有关系
+     *    的话会有问题，具体原因关注 readMe.md
      * 2. 有任务到来时，需要创建一个work，这个work有自己的函数，用来处理自己的任务,
      *    然后将其入列到worker中，待后续执行处理
      */
@@ -129,16 +128,6 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
         printk(KERN_ERR "Failed to create kthread_worker\n");
         return PTR_ERR(worker);
     }
-
-    /*
-     * 绑定 kthread_worker_fn 到worker
-     * task = kthread_run(kthread_worker_fn, worker, "my_kthread");
-     * if (IS_ERR(task)) {
-     *     printk(KERN_ERR "Failed to create kthread\n");
-     *     kthread_destroy_worker(worker);
-     *     return PTR_ERR(task);
-     * }
-     */
 
     /* 分配并初始化工作项 */
     data = kmalloc(sizeof(*data), GFP_KERNEL);
