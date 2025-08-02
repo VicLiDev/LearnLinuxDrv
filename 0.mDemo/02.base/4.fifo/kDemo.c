@@ -27,25 +27,63 @@ static char *exit_desc = "default exit desc";
 module_param(init_desc, charp, S_IRUGO);
 module_param(exit_desc, charp, S_IRUGO);
 
-#define FIFO_SIZE2   1024  // 必须是2的幂
+#define FIFO_SIZE   1024   // 必须是2的幂
 
-static DEFINE_KFIFO(my_fifo2, char, FIFO_SIZE2);
-static DEFINE_SPINLOCK(fifo_lock);
+// select one
+#define USE_INIT_DECLARE
+// #define USE_INIT_DEFINE
+// #define USE_INIT_DYNAMIC
+
 /*
- * 或者动态初始化
+ * 在 kernel 中 DECLARE 和 DEFINE 的关系为：
+ * DECLARE 只是声明了变量，但没有给初始值
+ * DEFINE 使用 DECLARE 声明了变量，并同时进行了初始化
+ * 因此如果是在结构体中声明变量的时候，应该用 DECLARE
  *
- * // 定义 kfifo 的大小
- * #define FIFO_SIZE 128
- * // 声明 kfifo 变量
- * struct kfifo my_fifo;
- * // 缓冲区，用于存储 kfifo 中的数据
- * char buffer[FIFO_SIZE];
- * // 初始化 kfifo，传入缓冲区、大小和标志
- * if (kfifo_init(&my_fifo, buffer, sizeof(buffer)) != 0) {
- *     printk(KERN_ERR "Failed to initialize kfifo\n");
- *     return -1;
+ * #define DEFINE_KFIFO(fifo, type, size) \
+ * DECLARE_KFIFO(fifo, type, size) = \
+ * (typeof(fifo)) { \
+ * 	{ \
+ * 		{ \
+ * 		.in	= 0, \
+ * 		.out	= 0, \
+ * 		.mask	= __is_kfifo_ptr(&(fifo)) ? \
+ * 			  0 : \
+ * 			  ARRAY_SIZE((fifo).buf) - 1, \
+ * 		.esize	= sizeof(*(fifo).buf), \
+ * 		.data	= __is_kfifo_ptr(&(fifo)) ? \
+ * 			NULL : \
+ * 			(fifo).buf, \
+ * 		} \
+ * 	} \
  * }
+ *
+ * DECLARE_KFIFO 最终会按照如下处理
+ * #define __STRUCT_KFIFO_COMMON(datatype, recsize, ptrtype) \
+ * union { \
+ * 	struct __kfifo	kfifo; \
+ * 	datatype	*type; \
+ * 	const datatype	*const_type; \
+ * 	char		(*rectype)[recsize]; \
+ * 	ptrtype		*ptr; \
+ * 	ptrtype const	*ptr_const; \
+ * }
+ *
  */
+#ifdef USE_INIT_DECLARE
+DECLARE_KFIFO(m_fifo, char, FIFO_SIZE);
+#endif
+
+#ifdef USE_INIT_DEFINE
+static DEFINE_KFIFO(m_fifo, char, FIFO_SIZE);
+#endif
+
+#ifdef USE_INIT_DYNAMIC
+static struct kfifo m_fifo;
+static char buffer[FIFO_SIZE];
+#endif
+
+static DEFINE_SPINLOCK(fifo_lock);
 
 static int m_chrdev_open(struct inode *inode, struct file *file);
 static int m_chrdev_release(struct inode *inode, struct file *file);
@@ -88,6 +126,36 @@ static int m_chrdev_uevent(const struct device *dev, struct kobj_uevent_env *env
 static int m_chrdev_open(struct inode *inode, struct file *file)
 {
     printk("M_CHRDEV: Device open\n");
+
+#ifdef USE_INIT_DYNAMIC
+    if (kfifo_init(&m_fifo, buffer, sizeof(buffer)) != 0) {
+        printk(KERN_ERR "Failed to initialize kfifo\n");
+        return -1;
+    }
+#endif
+
+#ifdef USE_INIT_DECLARE
+    /*
+     * INIT_KFIFO 是 用于初始化通过 DECLARE_KFIFO 静态声明的 kfifo 缓冲区的宏。
+     * 虽然 DECLARE_KFIFO 通常已经自动完成初始化，但某些情况下（比如你把 FIFO
+     * 包在结构体里、需要手动清空/重用）会用到 INIT_KFIFO。
+     *
+     *
+     * INIT_KFIFO vs kfifo_reset
+     *
+     * | 对比点                  | `INIT_KFIFO()`                                     | `kfifo_reset()`                      |
+     * | ----------------------- | -------------------------------------------------- | ------------------------------------ |
+     * | 是否重新设置 buffer     | ✅ 是（重新设置 `.buffer`, `.size`, `.esize` 等）  | ❌ 否，仅清空 `.in`, `.out`          |
+     * | 是否重建结构            | ✅ 是，对 `struct kfifo` 进行完整初始化            | ❌ 否，仅重置数据指针                |
+     * | 是否会影响 buffer 内容  | ❌ 不清除内容，只是重设状态                        | ❌ 同上                              |
+     * | 是否可用于 uninit FIFO  | ✅ 是（比如你手动写了 `struct kfifo myfifo;` 之后）| ❌ 不可，必须先已初始化              |
+     * | 安全性                  | ✅ 完全初始化（含校验参数）                        | ⚠️ 前提：`kfifo` 必须是合法初始化过的 |
+     * | 推荐使用场景            | 初始化一个新的 FIFO、重新分配 buffer 后重新设置    | 清空已有 FIFO 的数据、重用现有结构   |
+     *
+     */
+    INIT_KFIFO(m_fifo);
+#endif
+
     return 0;
 }
 
@@ -108,29 +176,29 @@ static int fifo_demo(void)
     spin_lock(&fifo_lock);
 
     // 1. 重置 FIFO
-    kfifo_reset(&my_fifo2);
+    kfifo_reset(&m_fifo);
 
     // 2. 使用 kfifo_in() 将字符串写入 FIFO
-    copied = kfifo_in(&my_fifo2, inbuf, sizeof(inbuf));
+    copied = kfifo_in(&m_fifo, inbuf, sizeof(inbuf));
     pr_info("kfifo_in: inserted %u bytes: %s\n", copied, inbuf);
 
     // 3. 使用 kfifo_out() 从 FIFO 中读取数据
-    copied = kfifo_out(&my_fifo2, outbuf, sizeof(outbuf));
+    copied = kfifo_out(&m_fifo, outbuf, sizeof(outbuf));
     pr_info("kfifo_out: got %u bytes: %s\n", copied, outbuf);
 
     // 4. 使用 kfifo_put() 插入单个字符
     for (i = 0; i < 5; i++) {
         ch = 'a' + i;
-        if (kfifo_put(&my_fifo2, ch))
+        if (kfifo_put(&m_fifo, ch))
             pr_info("kfifo_put: put %c\n", ch);
     }
 
     // 5. 使用 kfifo_peek() 看第一个字符
-    if (kfifo_peek(&my_fifo2, &ch))
+    if (kfifo_peek(&m_fifo, &ch))
         pr_info("kfifo_peek: %c\n", ch);
 
     // 6. 使用 kfifo_get() 逐个取出
-    while (kfifo_get(&my_fifo2, &ch))
+    while (kfifo_get(&m_fifo, &ch))
         pr_info("kfifo_get: got %c\n", ch);
 
     spin_unlock(&fifo_lock);
@@ -153,11 +221,11 @@ static ssize_t m_chrdev_read(struct file *file, char __user *buf, size_t count, 
 
     printk("Reading device: %d\n", MINOR(file->f_path.dentry->d_inode->i_rdev));
 
-    if (kfifo_is_empty(&my_fifo2))
+    if (kfifo_is_empty(&m_fifo))
         return 0;
 
     spin_lock(&fifo_lock);
-    ret = kfifo_to_user(&my_fifo2, buf, count, &copied);
+    ret = kfifo_to_user(&m_fifo, buf, count, &copied);
     spin_unlock(&fifo_lock);
 
     return ret ? ret : copied;
@@ -170,11 +238,11 @@ static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t 
 
     printk("Writing device: %d\n", MINOR(file->f_path.dentry->d_inode->i_rdev));
 
-    if (kfifo_is_full(&my_fifo2))
+    if (kfifo_is_full(&m_fifo))
         return -ENOSPC;
 
     spin_lock(&fifo_lock);
-    ret = kfifo_from_user(&my_fifo2, buf, count, &copied);
+    ret = kfifo_from_user(&m_fifo, buf, count, &copied);
     spin_unlock(&fifo_lock);
 
     return ret ? ret : copied;
