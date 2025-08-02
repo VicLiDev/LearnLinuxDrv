@@ -1,0 +1,170 @@
+
+## 常见内存分配方法概览
+
+| 分配方法      | API 函数                         | 分配单位            | 分配大小限制          | 是否物理连续 | 可否睡眠                     | 适用场景                       |
+| ------------- | -------------------------------- | ------------------- | --------------------- | ------------ | ---------------------------- | ------------------------------ |
+| Slab 分配器   | `kmalloc`/`kzalloc`              | 字节（byte）        | 一般小于 1 MB         | ✅ 是        | ✅ 可以                      | 常规小对象，缓存、结构体分配等 |
+| vmalloc       | `vmalloc`/`vzalloc`              | 字节                | 可达几百 MB（非连续） | ❌ 否        | ✅ 可以                      | 分配大内存但不要求物理连续性   |
+| 页面分配器    | `alloc_pages`/`__get_free_pages` | 页面（4K 的整数倍） | 通常最多 8MB（连续）  | ✅ 是        | ❌ 不可                      | 内核页表、内存管理子系统使用等 |
+| 高端内存映射  | `kmap`/`kmap_atomic`             | 页面                | —                     | ✅ 是        | `kmap`: ✅ `kmap_atomic`: ❌ | 访问高端内存                   |
+| 内存池/缓存池 | `kmem_cache_alloc`               | 对象                | —                     | ✅ 是        | ✅ 可以                      | 对象频繁分配释放的场景         |
+
+---
+
+| 分配方式               | 申请函数（举例）           | 对应释放函数                                 | 说明                                  |
+| ---------------------- | -------------------------- | -------------------------------------------- | ------------------------------------- |
+| `kmalloc` / `kzalloc`  | `kmalloc()`, `kzalloc()`   | `kfree(ptr)`                                 | 用于释放 `kmalloc` 分配的物理连续内存 |
+| `vmalloc` / `vzalloc`  | `vmalloc()`, `vzalloc()`   | `vfree(ptr)`                                 | 用于释放虚拟连续但物理不连续的内存    |
+| `alloc_pages`          | `alloc_pages()`            | `__free_pages(page, order)`                  | 释放 `struct page *`                  |
+| `__get_free_pages`     | `__get_free_pages()`       | `free_pages((unsigned long)ptr, order)`      | 注意参数是虚拟地址 cast               |
+| `kmem_cache_alloc`     | `kmem_cache_alloc()`       | `kmem_cache_free()` + `kmem_cache_destroy()` | 释放对象和整个缓存池                  |
+| `kmap` / `kmap_atomic` | `kmap(page)`               | `kunmap(page)` / `kunmap_atomic()`           | 解除高端页映射                        |
+| `highmem page` 分配    | `alloc_pages(GFP_HIGHMEM)` | `__free_pages()`                             | 释放高端页                            |
+
+---
+
+## 内存分配方法详解
+
+### 1. `kmalloc` / `kzalloc`
+
+```c
+void *kmalloc(size_t size, gfp_t flags);
+void *kzalloc(size_t size, gfp_t flags); // 分配并清零
+```
+
+* 分配的内存是 **物理连续** 的。
+* 内存可以直接用于 DMA 等硬件访问。
+* `GFP_KERNEL` 允许睡眠，`GFP_ATOMIC` 用于中断上下文。
+* 一般限制在 `order <= 10`（4MB）内。
+
+---
+
+### 2. `vmalloc` / `vzalloc`
+
+```c
+void *vmalloc(unsigned long size);
+void *vzalloc(unsigned long size); // 分配并清零
+```
+
+* 分配的是 **虚拟连续但物理不连续** 的内存。
+* 内存不可用于 DMA。
+* 用于大块内存，通常用于内核模块缓存等。
+
+---
+
+### 3. `alloc_pages` / `__get_free_pages`
+
+```c
+struct page *alloc_pages(gfp_t gfp_mask, unsigned int order);
+unsigned long __get_free_pages(gfp_t gfp_mask, unsigned int order);
+```
+
+* 分配的内存单位是 **页**。
+* `order` 是以 2 的幂计算的页面数（`order=2` 表示 4 页）。
+* 适合页表、大页内存分配。
+
+---
+
+### 4. `kmap` / `kmap_atomic`
+
+* 只用于高端内存（32-bit 系统为主）。
+* `kmap()` 允许睡眠。
+* `kmap_atomic()` 不允许睡眠，必须在临界区使用。
+
+---
+
+### 5. `kmem_cache_alloc`
+
+```c
+struct kmem_cache *kmem_cache_create(...);
+void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags);
+```
+
+* 适用于对象频繁分配释放的场景（如 slab cache）。
+* 分配固定大小对象，效率高、碎片少。
+
+---
+
+## 内核中各种内存释放方法详解
+
+---
+
+### 1. `kfree`
+
+```c
+void *p = kmalloc(128, GFP_KERNEL);
+// ...
+kfree(p);
+```
+
+* 对应 `kmalloc`、`kzalloc`。
+* 不能用于释放 `vmalloc` 的内存。
+
+---
+
+### 2. `vfree`
+
+```c
+void *p = vmalloc(1024 * 1024);
+// ...
+vfree(p);
+```
+
+* 对应 `vmalloc` / `vzalloc`。
+* 不可用 `kfree` 来释放。
+
+---
+
+### 3. `__free_pages`
+
+```c
+struct page *p = alloc_pages(GFP_KERNEL, 2);
+// ...
+__free_pages(p, 2);
+```
+
+* 分配和释放页面的标准方式。
+
+---
+
+### 4. `free_pages`
+
+```c
+unsigned long addr = __get_free_pages(GFP_KERNEL, 1);
+// ...
+free_pages(addr, 1);
+```
+
+* 注意传入的是 `unsigned long` 虚拟地址。
+
+---
+
+### 5. `kmem_cache_free` + `kmem_cache_destroy`
+
+```c
+struct kmem_cache *cache = kmem_cache_create(...);
+void *obj = kmem_cache_alloc(cache, GFP_KERNEL);
+// ...
+kmem_cache_free(cache, obj);
+kmem_cache_destroy(cache);
+```
+
+* 通常在模块卸载时释放。
+
+---
+
+### 6. `kunmap` / `kunmap_atomic`
+
+```c
+void *vaddr = kmap(page);
+// ...
+kunmap(page);
+```
+
+```c
+void *vaddr = kmap_atomic(page);
+// ...
+kunmap_atomic(vaddr);
+```
+
+* 映射高端页后一定要解映射，防止地址泄漏或错误。
