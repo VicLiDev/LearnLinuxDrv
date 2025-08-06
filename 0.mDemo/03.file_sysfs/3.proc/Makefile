@@ -101,9 +101,21 @@ exit:
 
 test:
 	@echo "======> test <======"
-	./uDemo -b
-	cat /proc/my_proc_demo
-	echo "hello for proc test" > /proc/my_proc_demo
-	cat /proc/my_proc_demo
+	@echo "------> generic <------"
+	cat /proc/proc_demo/entry_generic
+	echo "generic new test" > /proc/proc_demo/entry_generic
+	cat /proc/proc_demo/entry_generic
+	@echo "------> single <------"
+	cat /proc/proc_demo/entry_single
+	@echo "------> single_data <------"
+	cat /proc/proc_demo/entry_single_data
+	@echo "------> data <------"
+	cat /proc/proc_demo/entry_data
+	echo "data new test" > /proc/proc_demo/entry_data
+	cat /proc/proc_demo/entry_data
+	@echo "------> seq <------"
+	cat /proc/proc_demo/entry_seq
+	echo "seq new test" > /proc/proc_demo/entry_seq
+	cat /proc/proc_demo/entry_seq
 
 endif

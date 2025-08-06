@@ -32,7 +32,7 @@ module_param(exit_desc, charp, S_IRUGO);
 #define PROC_DIRNAME "proc_demo"
 static struct proc_dir_entry *demo_dir;
 
-struct proc_dir_entry *generic_entry, *singel_entry, *sig_data_entry;
+struct proc_dir_entry *generic_entry, *singel_entry, *sig_data_entry, *proc_data_entry, *proc_seq_entry;
 
 /*
  * proc_ops 结构体核心函数
@@ -145,6 +145,200 @@ static int data_show(struct seq_file *m, void *v)
     seq_printf(m, "Message: %s\n", msg);
     return 0;
 }
+
+/* ---- proc_create_data 示例 ---- */
+/*
+ * proc_create_data() 是 Linux 内核中创建 支持私有数据（void *data） 的 /proc
+ * 文件的通用函数。
+ * 可以将它看作是比 proc_create() 更强大的版本：它允许传入一个自定义的数据指针，
+ * 这个指针会保存在 proc_dir_entry 中，以便在 file/inode 操作中通过 PDE_DATA() 访问。
+ *
+ * 创建的文件可读可写
+ *
+ * 访问私有数据的方法：
+ * void *data = PDE_DATA(inode);                  // 在 open 时通过 inode 获取
+ * void *data = PDE_DATA(file_inode(file));       // 在 read/write 时通过 file 获取
+ */
+// 编译有问题，这里自己定义
+#ifndef PDE_DATA
+#define PDE_DATA(inode) ((inode)->i_private)
+#endif
+
+#define DATA_ENTRY_NAME "entry_data"
+
+struct m_data {
+    char msg[128];
+    int counter;
+};
+
+static struct m_data m_info = {
+    .msg = "Hello from /proc data entry!",
+    .counter = 0,
+};
+
+static int m_show(struct seq_file *m, void *v)
+{
+    struct m_data *d = m->private;
+    seq_printf(m, "Message: %s\nCounter: %d\n", d->msg, d->counter);
+    return 0;
+}
+
+static int m_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, m_show, PDE_DATA(inode));
+}
+
+static ssize_t m_write(struct file *file, const char __user *buf, size_t len, loff_t *ppos)
+{
+    struct m_data *d = PDE_DATA(file_inode(file));
+    char tmp[128];
+
+    if (len >= sizeof(tmp))
+        return -EINVAL;
+
+    if (copy_from_user(tmp, buf, len))
+        return -EFAULT;
+
+    tmp[len] = '\0';
+
+    strncpy(d->msg, tmp, sizeof(d->msg) - 1);
+    d->counter++;
+
+    return len;
+}
+
+static const struct proc_ops m_proc_data_ops = {
+    .proc_open    = m_open,
+    .proc_read    = seq_read,
+    .proc_write   = m_write,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
+
+/* ---- proc_create seq 示例 ---- */
+/*
+ * 总体原理
+ *   虽然没手写 proc_read()，但实际上用了 seq_file 接口，它内部封装了读取逻辑，
+ *   简化了开发 /proc 文件的过程。
+ *
+ * 提供了：
+ *   .proc_read = seq_read,
+ * 也就是说：
+ *   用户空间执行 cat /proc/m_seq
+ *   内核调用 proc_read() → 实际对应到 seq_read()（标准封装）
+ *   seq_read() 内部使用你定义的 seq_operations 来获取数据
+ * 整体调用流程图
+ *   用户空间：cat /proc/m_seq
+ *         ↓
+ *   VFS：调用 .read 方法 → 实际是 proc_read → seq_read
+ *         ↓
+ *   seq_read():
+ *       → seq->op->start()    // 你提供的 m_seq_start
+ *       → seq->op->show()     // 你提供的 m_seq_show
+ *       → seq->op->next()     // m_seq_next
+ *       → seq->op->stop()     // m_seq_stop
+ * 也就是说：
+ *   没实现 read()，但注册了 seq_read，它实际完成了所有分页和偏移管理
+ *   seq_file 的设计是为了简化大量输出的 /proc 实现（比如 /proc/meminfo）
+ *
+ * 细节解释：seq_file 是怎么工作的？
+ * seq_read() 会在每次读取时循环调用 seq_operations 的函数，直到读取完整个内容：
+ * | 函数名	   | 你的实现          | 作用                                   |
+ * | --------- | ----------------- | -------------------------------------- |
+ * | start()   | m_seq_start()	   | 初始化读取，返回数据项的指针           |
+ * | show()	   | m_seq_show()	   | 输出一项内容到 seq_file（类似 printf） |
+ * | next()	   | m_seq_next()	   | 移动到下一项                           |
+ * | stop()	   | m_seq_stop()	   | 清理收尾（可不实现）                   |
+ * 这样就能像写一个“数据项流”一样来输出内容，cat 可以一次读完或多次分页读，内核
+ * 自动处理。
+ *
+ * 那如果要输出多条数据怎么办？
+ * 只需要让 start() 返回不同的记录指针（比如链表的下一个节点），并在 next() 中
+ * 前进，就可以遍历输出多个记录！
+ *
+ * 类比场景：
+ * 1. 先打开本子（start）：准备从第1条数据开始读
+ * 2. 读出当前记录（show）：告诉他第1条记录，即实际的数据读操作
+ * 3. 翻页到下一条（next）：准备第2条数据
+ * 4. 重复 show/next... 直到读完
+ * 5. 关本子（stop）：清理状态
+ */
+
+#define SEQ_BUF_SIZE 1024
+
+static char m_seq_buf[SEQ_BUF_SIZE];
+static size_t m_seq_buf_len;
+static DEFINE_MUTEX(m_seq_buf_lock);
+
+// seq_file 相关函数
+
+static void *m_seq_start(struct seq_file *s, loff_t *pos)
+{
+    if (*pos >= 1)  // 只支持一条记录，pos大于等于1则结束
+        return NULL;
+    return m_seq_buf;
+}
+
+static void m_seq_stop(struct seq_file *s, void *v)
+{
+    // 不需要释放资源
+}
+
+static void *m_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    (*pos)++;
+    return NULL;
+}
+
+static int m_seq_show(struct seq_file *s, void *v)
+{
+    mutex_lock(&m_seq_buf_lock);
+    seq_write(s, m_seq_buf, m_seq_buf_len);
+    mutex_unlock(&m_seq_buf_lock);
+    return 0;
+}
+
+static const struct seq_operations m_seq_ops = {
+    .start = m_seq_start,
+    .next  = m_seq_next,
+    .stop  = m_seq_stop,
+    .show  = m_seq_show,
+};
+
+// open 调用 seq_open 并传递 seq_operations
+static int m_seq_proc_open(struct inode *inode, struct file *file)
+{
+    return seq_open(file, &m_seq_ops);
+}
+
+// 写操作，把用户数据写到 m_seq_buf
+static ssize_t m_seq_proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+{
+    ssize_t ret;
+
+    if (count > SEQ_BUF_SIZE - 1)
+        return -EINVAL;
+
+    mutex_lock(&m_seq_buf_lock);
+    if (copy_from_user(m_seq_buf, buf, count)) {
+        mutex_unlock(&m_seq_buf_lock);
+        return -EFAULT;
+    }
+    m_seq_buf[count] = '\0';
+    m_seq_buf_len = count;
+    mutex_unlock(&m_seq_buf_lock);
+
+    ret = count;
+    return ret;
+}
+
+static const struct proc_ops m_seq_proc_ops = {
+    .proc_open    = m_seq_proc_open,
+    .proc_read    = seq_read,
+    .proc_write   = m_seq_proc_write,
+    .proc_lseek   = seq_lseek,
+    .proc_release = seq_release,
+};
 
 
 static int m_chrdev_open(struct inode *inode, struct file *file);
@@ -349,6 +543,38 @@ static int __init m_chr_init(void)
         return -ENOMEM;
     }
 
+    /*
+     * 升级版本读写的 data entry
+     *
+     * struct proc_dir_entry *proc_create_data(const char *name, umode_t mode,
+     *      struct proc_dir_entry *parent, const struct proc_ops *proc_ops, void *data);
+     *
+     * 其中：
+     *   `name`: proc 文件名（如 `"m_proc_entry"`）
+     *   `mode`: 权限（如 `0444`, `0666` 等）
+     *   `parent`: 父目录（如传 `NULL` 表示 `/proc` 根目录）
+     *   `proc_ops`: 文件操作结构体，定义 `.proc_read`, `.proc_write`, `.proc_open` 等
+     *   `data`: 自定义数据指针（可通过 `PDE_DATA(inode)` 或 `PDE_DATA(file_inode(file))` 获取）
+     */
+    proc_data_entry = proc_create_data(DATA_ENTRY_NAME, 0666, demo_dir, &m_proc_data_ops, &m_info);
+    if (!proc_data_entry) {
+        pr_err("Failed to create /proc/%s/%s\n", PROC_DIRNAME, "sig_data_entry");
+        return -ENOMEM;
+    }
+    
+    /* */
+    // 初始化缓冲区
+    mutex_lock(&m_seq_buf_lock);
+    strcpy(m_seq_buf, "Initial kernel buffer content\n");
+    m_seq_buf_len = strlen(m_seq_buf);
+    mutex_unlock(&m_seq_buf_lock);
+
+    proc_seq_entry = proc_create("entry_seq", 0666, demo_dir, &m_seq_proc_ops);
+    if (!proc_seq_entry) {
+        pr_err("Failed to create /proc/%s\n", "entry_seq");
+        return -ENOMEM;
+    }
+
     pr_info("proc_demo module loaded.\n");
 
     return 0;
@@ -364,6 +590,8 @@ static void __exit m_chr_exit(void)
     proc_remove(generic_entry);
     proc_remove(singel_entry);
     proc_remove(sig_data_entry);
+    remove_proc_entry(DATA_ENTRY_NAME, NULL);
+    proc_remove(proc_seq_entry);
     // 也可以省略单独移除文件，直接删除文件夹
     remove_proc_subtree(PROC_DIRNAME, NULL);
     printk(KERN_INFO "proc_demo module unloaded.\n");
