@@ -16,6 +16,7 @@
 #include <linux/fs.h>
 
 #include <linux/proc_fs.h>
+#include <linux/slab.h>
 #include <linux/seq_file.h>
 
 
@@ -28,10 +29,10 @@ static char *exit_desc = "default exit desc";
 module_param(init_desc, charp, S_IRUGO);
 module_param(exit_desc, charp, S_IRUGO);
 
-#define PROC_NAME "my_proc_demo"
-#define BUF_SIZE 128
+#define PROC_DIRNAME "proc_demo"
+static struct proc_dir_entry *demo_dir;
 
-static char proc_data[BUF_SIZE] = "Hello from kernel proc\n";
+struct proc_dir_entry *generic_entry, *singel_entry, *sig_data_entry;
 
 /*
  * proc_ops 结构体核心函数
@@ -56,6 +57,9 @@ static char proc_data[BUF_SIZE] = "Hello from kernel proc\n";
  * 3. 分段复制：
  *    只复制合法范围内的数据到用户空间，避免越界访问。
  * 举个简单示范代码：
+ *   #define PROC_NAME "m_proc_demo"
+ *   #define BUF_SIZE 128
+ #   static char proc_data[BUF_SIZE] = "Hello from kernel proc\n";
  *   size_t len = strlen(proc_data);
  *   if (*ppos >= len)
  *       return 0;
@@ -67,12 +71,26 @@ static char proc_data[BUF_SIZE] = "Hello from kernel proc\n";
  *   return count;
  * 这里的 *ppos 是文件读写的偏移，内核帮你管理，不用担心用户空间访问越界，只要
  * 保证 count 合理即可。
+ *
+ * | 接口名称                  | 功能简介                                                  |
+ * | ------------------------- | --------------------------------------------------------- |
+ * | `proc_create`             | 最通用的创建方法，支持读写                                |
+ * | `proc_create_single`      | 简化版本，适用于只读数据输出，不可写入                    |
+ * | `proc_create_single_data` | 类似 `proc_create_single`，只读不写，但可携带私有数据指针 |
+ *
+ * 如果想让每个条目传递不同的数据结构，推荐使用 proc_create_single_data。
  */
 
-// 读函数（简单版）
-static ssize_t proc_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+/* ---- proc_create 示例 ---- */
+#define BUF_SIZE 128
+static char proc_buf[BUF_SIZE] = "Hello from kernel proc generic\n";
+static DEFINE_MUTEX(buf_lock);
+
+static ssize_t generic_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 {
-    size_t len = strlen(proc_data);
+// 以下两种写法均可
+#if 0
+    size_t len = strlen(proc_buf);
 
     if (*ppos >= len)  // 读完了，返回0表示EOF
         return 0;
@@ -80,34 +98,53 @@ static ssize_t proc_read(struct file *file, char __user *buf, size_t count, loff
     if (count > len - *ppos)
         count = len - *ppos;
 
-    if (copy_to_user(buf, proc_data + *ppos, count))
+    if (copy_to_user(buf, proc_buf + *ppos, count))
         return -EFAULT;
 
     *ppos += count;
     return count;
+#else
+
+    ssize_t ret;
+
+    mutex_lock(&buf_lock);
+    ret = simple_read_from_buffer(buf, count, ppos, proc_buf, strnlen(proc_buf, BUF_SIZE));
+    mutex_unlock(&buf_lock);
+    return ret;
+#endif
 }
 
-// 写函数
-static ssize_t proc_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+static ssize_t generic_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 {
     if (count > BUF_SIZE - 1)
         return -EINVAL;
 
-    if (copy_from_user(proc_data, buf, count))
+    if (copy_from_user(proc_buf, buf, count))
         return -EFAULT;
 
-    proc_data[count] = '\0';  // 末尾置0
+    proc_buf[count] = '\0';
     return count;
 }
 
-// open 和 release 通常不需要特殊处理，直接用默认
-
-static const struct proc_ops proc_fops = {
-    .proc_read  = proc_read,
-    .proc_write = proc_write,
+static const struct proc_ops generic_proc_ops = {
+    .proc_read  = generic_read,
+    .proc_write = generic_write,
 };
 
-static struct proc_dir_entry *proc_entry;
+/* ---- proc_create_single 示例 ---- */
+static int single_show(struct seq_file *m, void *v)
+{
+    seq_puts(m, "Hello from proc_create_single!\n");
+    return 0;
+}
+
+/* ---- proc_create_single_data 示例 ---- */
+static int data_show(struct seq_file *m, void *v)
+{
+    const char *msg = m->private;
+    seq_printf(m, "Message: %s\n", msg);
+    return 0;
+}
 
 
 static int m_chrdev_open(struct inode *inode, struct file *file);
@@ -254,12 +291,65 @@ static int __init m_chr_init(void)
     }
 
 
-    proc_entry = proc_create(PROC_NAME, 0666, NULL, &proc_fops);
-    if (!proc_entry) {
-        pr_err("Failed to create /proc/%s\n", PROC_NAME);
+	// 创建目录
+    demo_dir = proc_mkdir(PROC_DIRNAME, NULL);
+    if (!demo_dir)
+        return -ENOMEM;
+
+    /* 返回值：这三个函数都返回一个 struct proc_dir_entry *，可用于后续移除或检查
+     * 是否创建成功。*/
+
+    /*
+     * 普通可读写 entry
+     *
+     * struct proc_dir_entry *proc_create(const char *name, umode_t mode,
+     *      struct proc_dir_entry *parent, const struct proc_ops *proc_ops);
+     * 其中：
+     *   `name`：在 `/proc` 中的文件名
+     *   `mode`：文件权限（如 `0444`, `0666` 等）
+     *   `parent`：父目录（通常用 `NULL` 表示 `/proc` 根目录）
+     *   `proc_ops`：指定文件操作，如 `.proc_read`、`.proc_write`、`.proc_open` 等
+     */
+    generic_entry = proc_create("entry_generic", 0666, demo_dir, &generic_proc_ops);
+    if (!generic_entry) {
+        pr_err("Failed to create /proc/%s/%s\n", PROC_DIRNAME, "entry_generic");
         return -ENOMEM;
     }
-    pr_info("/proc/%s created\n", PROC_NAME);
+
+    /*
+     * 只读的 single entry，直接传 show 函数
+     *
+     * struct proc_dir_entry *proc_create_single(const char *name, umode_t mode,
+     *      struct proc_dir_entry *parent, int (*show)(struct seq_file *, void *));
+     *
+     * 自动设置 `.proc_open`, `.proc_read`, `.proc_release` 等函数（基于 `seq_file`）
+     * 只能读，不支持写
+     * 不支持传私有数据
+     */
+    singel_entry = proc_create_single("entry_single", 0444, demo_dir, single_show);
+    if (!singel_entry) {
+        pr_err("Failed to create /proc/%s/%s\n", PROC_DIRNAME, "singel_entry");
+        return -ENOMEM;
+    }
+
+    /*
+     * 带私有数据的 single entry，传 data_show 和自定义数据
+     *
+     * struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
+     *      struct proc_dir_entry *parent, int (*show)(struct seq_file *, void *), void *data);
+     *
+     * 功能同 `proc_create_single`
+     * 支持传入一个私有 `data`，可通过 `m->private` 在 `show()` 中访问
+     * 不支持写入
+     */
+    const char *msg = "custom data from kernel";
+    sig_data_entry = proc_create_single_data("entry_single_data", 0444, demo_dir, data_show, (void *)msg);
+    if (!sig_data_entry) {
+        pr_err("Failed to create /proc/%s/%s\n", PROC_DIRNAME, "sig_data_entry");
+        return -ENOMEM;
+    }
+
+    pr_info("proc_demo module loaded.\n");
 
     return 0;
 }
@@ -271,8 +361,12 @@ static void __exit m_chr_exit(void)
 
     printk(KERN_INFO "module %s exit desc:%s\n", __func__, exit_desc);
 
-    proc_remove(proc_entry);
-    pr_info("/proc/%s removed\n", PROC_NAME);
+    proc_remove(generic_entry);
+    proc_remove(singel_entry);
+    proc_remove(sig_data_entry);
+    // 也可以省略单独移除文件，直接删除文件夹
+    remove_proc_subtree(PROC_DIRNAME, NULL);
+    printk(KERN_INFO "proc_demo module unloaded.\n");
 
     for (idx = 0; idx < MAX_DEV; idx++) {
         device_destroy(m_chrdev_class, MKDEV(dev_major, idx));
