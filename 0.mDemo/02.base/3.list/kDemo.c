@@ -133,48 +133,174 @@ static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t 
 }
 
 /* 链表节点结构体 */
-struct list_node {
-    int data;
-    struct list_head list;
+struct person {
+    int id;
+    char name[16];
+    struct list_head link;
 };
 
-/* 初始化链表 */
 static void init_list(struct list_head *head)
 {
     INIT_LIST_HEAD(head);
 }
 
-/* 向链表添加节点 */
-static void add_node(struct list_head *head, int data)
+static void add_person_tail(struct list_head *head, int id, const char *name)
 {
-    struct list_node *new_node = kmalloc(sizeof(struct list_node), GFP_KERNEL);
-    if (!new_node) {
-        printk(KERN_ERR "Failed to allocate memory for list node\n");
+    struct person *p = kmalloc(sizeof(*p), GFP_KERNEL);
+    if (!p)
         return;
-    }
+    p->id = id;
+    strncpy(p->name, name, sizeof(p->name) - 1);
+    p->name[sizeof(p->name) - 1] = '\0';
 
-    new_node->data = data;
-    list_add_tail(&new_node->list, head);
+    list_add_tail(&p->link, head);  // 尾插
+    pr_info("Added %s (ID=%d) to tail\n", p->name, p->id);
 }
 
-/* 清理链表（释放所有节点） */
-static void cleanup_list(struct list_head *head)
+static void add_person_head(struct list_head *head, int id, const char *name)
 {
-    struct list_node *node, *tmp;
-    /* 因为保留了下一个节点，所以当前节点是可以删除的，因此是安全的 */
-    list_for_each_entry_safe(node, tmp, head, list) {
-        list_del(&node->list);
-        kfree(node);
-    }
+    struct person *p = kmalloc(sizeof(*p), GFP_KERNEL);
+    if (!p)
+        return;
+    p->id = id;
+    strncpy(p->name, name, sizeof(p->name) - 1);
+    p->name[sizeof(p->name) - 1] = '\0';
+
+    list_add(&p->link, head);  // 头插
+    pr_info("Added %s (ID=%d) to head\n", p->name, p->id);
 }
 
-/* 遍历链表并打印节点数据 */
-static void print_list(struct list_head *head)
+static void insert_person_sorted(struct list_head *head, int id, const char *name)
 {
-    struct list_node *node;
+    struct person *p, *new_p;
+
+    new_p = kmalloc(sizeof(*new_p), GFP_KERNEL);
+    if (!new_p)
+        return;
+    new_p->id = id;
+    strncpy(new_p->name, name, sizeof(new_p->name) - 1);
+    new_p->name[sizeof(new_p->name) - 1] = '\0';
+
     /* 没保留下一个节点，所以当前节点是不可以删除的，删除的话就找不到后续链表节点了 */
-    list_for_each_entry(node, head, list) {
-        printk(KERN_INFO "======> List Node data: %d\n", node->data);
+    list_for_each_entry(p, head, link) {
+        if (id < p->id) {
+            list_add_tail(&new_p->link, &p->link);  // 插在p之前
+            pr_info("Inserted %s (ID=%d) before %s\n", new_p->name, new_p->id, p->name);
+            return;
+        }
+    }
+
+    list_add_tail(&new_p->link, head);  // 插到最后
+    pr_info("Inserted %s (ID=%d) at end (sorted insert)\n", new_p->name, new_p->id);
+}
+
+static void print_list_forward(struct list_head *head)
+{
+    struct person *p;
+
+    pr_info("Forward traversal:\n");
+    list_for_each_entry(p, head, link) {
+        pr_info(" - %s (ID=%d)\n", p->name, p->id);
+    }
+}
+
+static void print_list_reverse(struct list_head *head)
+{
+    struct person *p;
+
+    pr_info("Reverse traversal:\n");
+    list_for_each_entry_reverse(p, head, link) {
+        pr_info(" - %s (ID=%d)\n", p->name, p->id);
+    }
+}
+
+static void delete_person_by_id(struct list_head *head, int id)
+{
+    struct person *p, *tmp;
+
+    /* 因为保留了下一个节点，所以当前节点是可以删除的，因此是安全的 */
+    list_for_each_entry_safe(p, tmp, head, link) {
+        if (p->id == id) {
+            pr_info("Deleting %s (ID=%d)\n", p->name, p->id);
+            list_del(&p->link);
+            kfree(p);
+            return;
+        }
+    }
+    pr_info("ID=%d not found\n", id);
+}
+
+static void move_head_to_tail(struct list_head *head)
+{
+    if (!list_empty(head)) {
+        struct list_head *first = head->next;
+        list_move_tail(first, head);
+        pr_info("Moved head to tail\n");
+    }
+}
+
+static void merge_lists_demo(struct list_head *head)
+{
+    static LIST_HEAD(extra_list);
+    struct person;
+
+    add_person_tail(&extra_list, 300, "Merge1");
+    add_person_tail(&extra_list, 400, "Merge2");
+    list_splice_tail(&extra_list, head);
+
+    // 清空 extra_list，只保留在 list 中
+    INIT_LIST_HEAD(&extra_list);
+
+    pr_info("Merged extra list into list\n");
+}
+
+static void show_list_entries(struct list_head *head)
+{
+    struct person *p;
+
+    pr_info("------ Dumping all entries ------\n");
+
+    list_for_each_entry(p, head, link) {
+        pr_info("Person ID: %d, Name: %s\n", p->id, p->name);
+    }
+
+    pr_info("------ Using first_entry and last_entry ------\n");
+
+    if (!list_empty(head)) {
+        struct person *first = list_first_entry(head, struct person, link);
+        struct person *last  = list_last_entry(head, struct person, link);
+        pr_info("First: ID=%d, Name=%s\n", first->id, first->name);
+        pr_info("Last : ID=%d, Name=%s\n", last->id, last->name);
+    }
+
+    pr_info("------ Using *_entry_or_null safely ------\n");
+
+    p = list_first_entry_or_null(head, struct person, link);
+    if (p)
+        pr_info("Safe First: ID=%d, Name=%s\n", p->id, p->name);
+
+    /* Show next and previous entries relative to first */
+    if (!list_empty(head)) {
+        struct person *first = list_first_entry(head, struct person, link);
+        struct person *next = list_next_entry(first, link);
+        if (&next->link != head)
+            pr_info("Next after first: ID=%d, Name=%s\n", next->id, next->name);
+
+        struct person *last = list_last_entry(head, struct person, link);
+        struct person *prev = list_prev_entry(last, link);
+        if (&prev->link != head)
+            pr_info("Prev before last: ID=%d, Name=%s\n", prev->id, prev->name);
+    }
+}
+
+static void clear_list(struct list_head *head)
+{
+    struct person *p, *tmp;
+
+    list_for_each_entry_safe(p, tmp, head, link) {
+        pr_info("Freeing %s (ID=%d)\n", p->name, p->id);
+        list_del(&p->link);
+        kfree(p);
     }
 }
 
@@ -183,7 +309,7 @@ static int __init m_chr_init(void)
     int err, idx;
     dev_t devno;
 
-    struct list_head my_list;
+    struct list_head person_list_head;
 
     /* 可以使用 cat /dev/kmsg 实时查看打印 */
     printk(KERN_INFO "module %s init desc:%s\n", __func__, init_desc);
@@ -222,21 +348,25 @@ static int __init m_chr_init(void)
     }
 
     /* 初始化链表 */
-    init_list(&my_list);
+    init_list(&person_list_head);
+    // 或者直接静态初始化
+    // static LIST_HEAD(person_list_head);  // 初始化链表头
 
-    /* 向链表添加节点 */
-    add_node(&my_list, 1);
-    add_node(&my_list, 2);
-    add_node(&my_list, 3);
+    add_person_tail(&person_list_head, 20, "Alice");
+    add_person_tail(&person_list_head, 40, "Charlie");
+    add_person_head(&person_list_head, 10, "Bob");
+    insert_person_sorted(&person_list_head, 30, "David");
 
-    /* 遍历链表并打印节点数据 */
-    print_list(&my_list);
+    print_list_forward(&person_list_head);
+    print_list_reverse(&person_list_head);
 
-    /*
-     * 但在真实场景中，如果链表节点是全局的，需要在模块退出时释放它们
-     * 该链表是在函数栈上分配的，不需要显式清理。但为了演示，在这里也执行它
-     */
-    cleanup_list(&my_list);
+    delete_person_by_id(&person_list_head, 40);
+    move_head_to_tail(&person_list_head);
+    merge_lists_demo(&person_list_head);
+    print_list_forward(&person_list_head);
+    show_list_entries(&person_list_head);
+
+    clear_list(&person_list_head);
 
     return 0;
 }
