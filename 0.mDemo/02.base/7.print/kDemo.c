@@ -105,6 +105,42 @@ static int m_print_method(struct device *dev)
     dev_info(dev, "Device started at address %p\n", dev);
     dev_err(dev, "Device failed to initialize info!\n");
 
+
+    /*
+     * | 特性     | `snprintf()`                        | `scnprintf()`                      |
+     * | -------- | ----------------------------------- | ---------------------------------- |
+     * | 返回值   | 原本想要写入的字符数（可能 > size） | 实际写入的字符数（不包括 `\0`）    |
+     * | 截断判断 | 需判断返回值是否 ≥ 缓冲区大小       | 返回值就是写入长度，适合串联写入   |
+     * | 推荐场景 | 一次性格式化输出                    | 多次追加、拼接格式化输出           |
+     *
+     * | 场景                   | 用哪个？    | 原因               |
+     * | ---------------------- | ----------- | ------------------ |
+     * | 单次格式化输出         | `snprintf`  | 简洁、语义清晰     |
+     * | 需要多次拼接格式化内容 | `scnprintf` | 能精确追踪写入长度 |
+     * | 关心是否被截断         | `snprintf`  | 返回预期长度       |
+     * | 追求高安全性和可控输出 | `scnprintf` | 不会越界           |
+     */
+    char buf[128];
+    int len1, len2, len3;
+
+    // 1. 使用 snprintf（一次性写入）
+    len1 = snprintf(buf, sizeof(buf), "Hello, %s! The value is %d.\n", "world", 42);
+    pr_info("snprintf: wrote %d chars: %s", len1, buf);
+
+    // 2. 使用 scnprintf 逐步拼接
+    // /dev/kmsg 是一个结构化的内核日志接口，它对内容做了特殊处理，
+    // /dev/kmsg 的每一条消息是一整行，因此这里的换行效果看不到，
+    // 但是在 dmesg 是可以看到换行效果的
+    len2 = scnprintf(buf, sizeof(buf), "Step 1: %d\n", 100);         // 第一次写入
+    len2 += scnprintf(buf + len2, sizeof(buf) - len2, "Step 2: %s\n", "ok");  // 追加
+    len2 += scnprintf(buf + len2, sizeof(buf) - len2, "Step 3: %.2d\n", 314); // 追加
+    pr_info("scnprintf total %d chars:\n%s", len2, buf);
+
+    // 3. 如果 buffer 太小的情况（演示截断）
+    char small_buf[10];
+    len3 = snprintf(small_buf, sizeof(small_buf), "123456789ABCDEFG");
+    pr_info("snprintf (small_buf): len=%d content='%s'", len3, small_buf);
+
     return 0;
 }
 

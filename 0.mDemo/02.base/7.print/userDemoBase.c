@@ -24,7 +24,7 @@ int test_base()
 #define KER_INFO_SZ 100
 
     FILE *fd_0;
-    int fd_1;
+    /* int fd_1; */
     char *user_info = "this is user info";
     char kernel_info[KER_INFO_SZ];
     unsigned long request = 0;
@@ -37,9 +37,9 @@ int test_base()
     printf("======> from kernel: %s\n", kernel_info);
     fclose(fd_0);
 
-    fd_1 = open(DEVNAME_1, O_RDWR);
-    ioctl(fd_1, request, &req_ack);
-    close(fd_1);
+    /* fd_1 = open(DEVNAME_1, O_RDWR); */
+    /* ioctl(fd_1, request, &req_ack); */
+    /* close(fd_1); */
 
     return 0;
 }
