@@ -15,7 +15,9 @@
 #include <linux/uaccess.h>
 #include <linux/fs.h>
 
-#include <linux/rwlock.h>
+#include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/delay.h>
 
 
 #define MAX_DEV 2
@@ -24,8 +26,19 @@
 static char *init_desc = "default init desc";
 static char *exit_desc = "default exit desc";
 
+/* 定义一个互斥锁 */
+static DEFINE_MUTEX(mutex_s);
+/* 声明一个互斥锁 */
+static struct mutex mutex_d;
+
+/* 声明一个自旋锁 */
+static spinlock_t spinlock_d;
+
+/* 定义一个读写锁 */
+static DEFINE_RWLOCK(rwlock_s);
 /* 声明一个读写锁 */
-static DEFINE_RWLOCK(my_rwlock);
+static rwlock_t rwlock_d;
+
 /* 共享资源 */
 static int shared_data = 0;
 
@@ -132,27 +145,56 @@ static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t 
     return count;
 }
 
-/* 写操作函数，需要写入锁 */
-static void write_operation(void)
+/* 一个访问共享资源的函数 */
+static void access_shared_resource(void)
 {
-    write_lock(&my_rwlock);
+    unsigned long flags;
+    (void) flags;
 
+    /* 获取互斥锁 */
+    mutex_lock(&mutex_s);
+    mutex_lock(&mutex_d);
+    /* 对共享资源进行操作 */
+    shared_data++;
+    msleep(100); /* 模拟耗时操作 */
+    shared_data--;
+    /* 打印当前计数器的值 */
+    pr_info("======> shared_data value: %d\n", shared_data);
+    /* 释放互斥锁 */
+    mutex_unlock(&mutex_d);
+    mutex_unlock(&mutex_s);
+    /* 获取自旋锁 */
+    /* 考虑这种情况：
+     *   线程 A 正在执行并加锁（spin_lock()）
+     *   中断突然发生（比如 timer IRQ），也试图获取同一个锁
+     *   中断无法获取锁 → 自旋等待
+     *   但线程 A 无法继续运行（被中断了）→ 死锁发生
+     */
+    // 在获取自旋锁之前，关闭本地 CPU 的中断（local_irq_disable）。
+    // 并且保存当前中断状态到 flags关中断并保存中断状态
+    // spin_lock_irqsave(&spinlock_d, flags);
+    // 只是获取锁，不影响中断状态
+    spin_lock(&spinlock_d);
+    /* 对共享资源进行操作 */
+    shared_data++;
+    udelay(1000); /* 模拟耗时操作，自选锁不能时间太长，因此这里单独处理耗时 */
+    shared_data--;
+    /* 打印当前计数器的值 */
+    pr_info("======> shared_data value: %d\n", shared_data);
+    /* 释放自旋锁 */
+    spin_unlock(&spinlock_d);
+    // 先解锁 spinlock，然后再恢复中断状态。
+    // spin_unlock_irqrestore(&spinlock_d, flags);
+
+    /* 获取读写锁 */
+    write_lock(&rwlock_s);
+    write_lock(&rwlock_d);
     /* 执行写临界区代码 */
     shared_data++;
     shared_data--;
-
-    write_unlock(&my_rwlock);
-}
-
-/* 读操作函数，需要读取锁 */
-static void read_operation(void)
-{
-    read_lock(&my_rwlock);
-
-    /* 执行读临界区代码 */
-    pr_info("Read shared_data: %d\n", shared_data);
-
-    read_unlock(&my_rwlock);
+    /* 释放读写锁 */
+    write_unlock(&rwlock_d);
+    write_unlock(&rwlock_s);
 }
 
 static int __init m_chr_init(void)
@@ -196,9 +238,15 @@ static int __init m_chr_init(void)
         device_create(m_chrdev_class, NULL, MKDEV(dev_major, idx), NULL, "m_chrdev_%d", idx);
     }
 
-    /* 执行读写操作 */
-    write_operation();
-    read_operation();
+    /* 初始化互斥锁 */
+    mutex_init(&mutex_d);
+    /* 初始化自旋锁 */
+    spin_lock_init(&spinlock_d);
+    /* 初始化读写锁 */
+    rwlock_init(&rwlock_d);
+
+    /* 在这里调用访问共享资源的函数 */
+    access_shared_resource();
 
     return 0;
 }
