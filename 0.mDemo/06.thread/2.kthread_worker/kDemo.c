@@ -28,6 +28,9 @@ static char *exit_desc = "default exit desc";
 module_param(init_desc, charp, S_IRUGO);
 module_param(exit_desc, charp, S_IRUGO);
 
+struct kthread_worker *worker;
+struct my_work_data *data, *data2;
+
 static int m_chrdev_open(struct inode *inode, struct file *file);
 static int m_chrdev_release(struct inode *inode, struct file *file);
 static long m_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -90,8 +93,6 @@ static void my_work_func(struct kthread_work *work)
     ts64.tv_nsec = ts64.tv_nsec;
 
     printk(KERN_INFO "======> Current time: %ld.%09ld\n", (long)ts64.tv_sec, (long)ts64.tv_nsec);
-
-    kfree(data); /* 释放工作数据 */
 }
 
 static void init_work(struct my_work_data *data, int id)
@@ -102,10 +103,6 @@ static void init_work(struct my_work_data *data, int id)
 
 static int m_chrdev_open(struct inode *inode, struct file *file)
 {
-    struct kthread_worker *worker;
-    struct task_struct *task;
-    struct my_work_data *data, *data2;
-
     printk("M_CHRDEV: Device open\n");
 
     /*
@@ -133,7 +130,6 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
     data = kmalloc(sizeof(*data), GFP_KERNEL);
     if (!data) {
         printk(KERN_ERR "Failed to allocate work data\n");
-        kthread_stop(task);
         kthread_destroy_worker(worker);
         return -ENOMEM;
     }
@@ -141,7 +137,7 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
     data2 = kmalloc(sizeof(*data2), GFP_KERNEL);
     if (!data2) {
         printk(KERN_ERR "Failed to allocate work data\n");
-        kthread_stop(task);
+        kfree(data);
         kthread_destroy_worker(worker);
         return -ENOMEM;
     }
@@ -152,24 +148,13 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
     /* 提交工作项到worker */
     kthread_queue_work(worker, &data->work);
     kthread_queue_work(worker, &data2->work);
-
     printk(KERN_INFO "Work item submitted to kthread_worker\n");
 
     /*
      * 等待工作项完成（在实际应用中，你可能不需要等待）
      * 这里为了示例简单，我们使用schedule()来让出CPU
      */
-    schedule();
-
-    /* 等所有任务执行完 */
-    kthread_flush_worker(worker);
-    /* 停止线程 */
-    if (worker->task)
-        kthread_stop(worker->task);
-    /* 如果是动态分配的，释放内存 */
-    // kfree(worker);
-    // worker = NULL;
-
+    // schedule();
 
     return 0;
 }
@@ -178,10 +163,13 @@ static int m_chrdev_release(struct inode *inode, struct file *file)
 {
     printk("M_CHRDEV: Device close\n");
 
-    /*
-     * 在这里，我们假设worker和线程已经在其他地方被正确地清理了
-     * 在实际应用中，你需要确保在模块卸载时正确地停止线程并销毁worker
-     */
+    /* 等所有任务执行完 */
+    // flush + destroy worker (仅演示用，实际应放在 driver exit)
+    kthread_flush_worker(worker);
+    kthread_destroy_worker(worker);
+
+    kfree(data);
+    kfree(data2);
 
     return 0;
 }
