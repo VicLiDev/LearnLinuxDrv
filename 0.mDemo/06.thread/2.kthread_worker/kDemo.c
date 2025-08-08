@@ -160,6 +160,17 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
      * 这里为了示例简单，我们使用schedule()来让出CPU
      */
     schedule();
+
+    /* 等所有任务执行完 */
+    kthread_flush_worker(worker);
+    /* 停止线程 */
+    if (worker->task)
+        kthread_stop(worker->task);
+    /* 如果是动态分配的，释放内存 */
+    // kfree(worker);
+    // worker = NULL;
+
+
     return 0;
 }
 
