@@ -74,6 +74,70 @@ kthread_worker 和 work_struct 没有包含关系，属于完全**不同的机�
 | `kthread_work`   | 分给 `kthread_worker` 的任务 | 它不能投给 `work_struct`   |
 
 
+
+### 工作逻辑对比
+
+| 特性              | `work_struct`（通用工作队列）                                            | `kthread_work`（内核线程工作队列）                                     |
+| ----------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| **核心思想**      | 把任务放进内核**全局/自定义 workqueue**，由 worker 线程池执行            | 把任务放进你自己创建的 **kthread_worker** 队列，由你自己的内核线程执行 |
+| **调度主体**      | 系统维护的 **kworker** 线程池（每 CPU 通常一个或多个线程）               | 你创建的 **kthread_worker**（通常就是一个内核线程）                    |
+| **初始化**        | `INIT_WORK(&work, handler)`                                              | `kthread_init_work(&work, handler)`                                    |
+| **提交任务**      | `schedule_work(&work)`（默认队列）或 `queue_work(wq, &work)`（指定队列） | `kthread_queue_work(worker, &work)`                                    |
+| **任务存储位置**  | workqueue 的链表                                                         | kthread_worker 的链表                                                  |
+| **执行线程数量**  | 默认是多线程（可能跨 CPU 并行）                                          | 一般单线程（串行执行）                                                 |
+| **线程控制权**    | 完全由内核调度                                                           | 由你完全控制（可暂停、停止、绑定 CPU）                                 |
+| **CPU 亲和性**    | 系统自动选择（可能跨 CPU）                                               | 你可以绑死到指定 CPU                                                   |
+| **使用场景**      | 短小异步任务，不需要严格顺序                                             | 长耗时任务、需要串行顺序、需要精确线程控制                             |
+
+---
+
+### 并行性对比
+
+#### `work_struct`
+
+* **默认 workqueue** → 多 worker 线程 → 多 CPU 上可并行执行不同任务
+* 同一个 `struct work_struct` 任务：
+  * **不能并行**（因为内部有 `pending` 标志）
+  * 如果任务正在执行，重复提交会被忽略
+* 不同的 `struct work_struct` → **可能同时运行在不同 CPU**
+
+---
+
+#### `kthread_work`
+
+* 同一个 `kthread_worker` **一次只执行一个任务** → **绝对串行**
+* 即使提交多个任务，也会一个接一个执行
+* 如果要并行，需要自己创建多个 `kthread_worker`（多个线程）
+
+---
+
+### 执行流程图
+
+```
+work_struct（多线程模型）:
+   schedule_work() → 加入 system_wq
+                     ↓
+            多个 kworker 线程争抢任务
+             CPU0 执行任务A   CPU1 执行任务B   CPU2 执行任务C
+            （并行执行）
+
+kthread_work（单线程模型）:
+   kthread_queue_work() → 加入 kthread_worker 队列
+                            ↓
+             唯一的 worker 线程顺序取任务
+              执行任务A → 执行任务B → 执行任务C
+            （严格串行）
+```
+
+---
+
+### 总结
+
+* **想省事** → 用 `work_struct`，由系统线程池自动并行调度
+* **想保证顺序** / **长耗时任务** / **精确控制线程生命周期** → 用 `kthread_work`
+* **同一个任务结构体**（无论哪种）在执行中不会被并行运行，但不同任务的并行情况取决于线程模型
+
+
 ---
 
 ## 1. `struct task_struct`
