@@ -1,7 +1,7 @@
 /*************************************************************************
     > File Name: kDemo.c
     > Author: LiHongjin
-    > Mail: 872648180@qq.com 
+    > Mail: 872648180@qq.com
     > Created Time: Fri Oct 13 16:02:51 2023
  ************************************************************************/
 
@@ -14,6 +14,11 @@
 /* file opt */
 #include <linux/uaccess.h>
 #include <linux/fs.h>
+
+#include <linux/delay.h>
+#include <linux/sched.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 
 
 #define MAX_DEV 2
@@ -78,6 +83,41 @@ static int m_chrdev_release(struct inode *inode, struct file *file)
 static long m_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     printk("M_CHRDEV: Device ioctl\n");
+
+    pr_info("=== Delay Demo Start ===\n");
+
+    /* 忙等 */
+    pr_info("udelay 10us\n");
+    udelay(10);
+
+    pr_info("ndelay 500ns\n");
+    ndelay(500);
+
+    pr_info("mdelay 2ms\n");
+    mdelay(2);
+
+    /* 可调度延迟 */
+    pr_info("usleep_range 100~200us\n");
+    usleep_range(100, 200);
+
+    pr_info("msleep 50ms\n");
+    msleep(50);
+
+    /* jiffies 延迟 */
+    pr_info("schedule_timeout 500ms\n");
+    set_current_state(TASK_INTERRUPTIBLE);
+    schedule_timeout(msecs_to_jiffies(500));
+
+    /* 高精度延迟 */
+#if IS_ENABLED(CONFIG_HIGH_RES_TIMERS)
+    {
+        ktime_t t = ktime_set(0, 500 * 1000); // 500us
+        pr_info("schedule_hrtimeout 500us\n");
+        schedule_hrtimeout(&t, HRTIMER_MODE_REL);
+    }
+#endif
+
+    pr_info("=== Delay Demo End ===\n");
     return 0;
 }
 
@@ -125,16 +165,6 @@ static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t 
     return count;
 }
 
-/* 定义工作处理函数 */
-static void my_delayed_work_func(struct work_struct *work)
-{
-    printk(KERN_INFO "Delayed work is running...\n");
-    /* 这里是你的工作处理代码 */
-}
-
-/* 定义延迟工作项 */
-static DECLARE_DELAYED_WORK(my_delayed_work, my_delayed_work_func);
-
 static int __init m_chr_init(void)
 {
     int err, idx;
@@ -176,9 +206,6 @@ static int __init m_chr_init(void)
         device_create(m_chrdev_class, NULL, MKDEV(dev_major, idx), NULL, "m_chrdev_%d", idx);
     }
 
-    /* 调度延迟工作项，在 2 秒后执行 */
-    schedule_delayed_work(&my_delayed_work, msecs_to_jiffies(2000));
-
     return 0;
 }
 
@@ -188,9 +215,6 @@ static void __exit m_chr_exit(void)
     int idx;
 
     printk(KERN_INFO "module %s exit desc:%s\n", __func__, exit_desc);
-
-    /* 取消任何未执行的延迟工作项 */
-    cancel_delayed_work_sync(&my_delayed_work);  
 
     for (idx = 0; idx < MAX_DEV; idx++) {
         device_destroy(m_chrdev_class, MKDEV(dev_major, idx));

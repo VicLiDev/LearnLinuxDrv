@@ -30,6 +30,8 @@ module_param(exit_desc, charp, S_IRUGO);
 static struct work_struct my_work;
 static struct work_struct cancelable_work;
 static struct delayed_work my_delayed_work;
+// or
+// static DECLARE_DELAYED_WORK(my_delayed_work, delayed_handler);
 
 static void work_handler(struct work_struct *work)
 {

@@ -9,5 +9,4 @@
 make
 make init
 make test
-sleep 3
 make exit

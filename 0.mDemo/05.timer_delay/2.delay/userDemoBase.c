@@ -1,7 +1,7 @@
 /*************************************************************************
     > File Name: userDemo.c
     > Author: LiHongjin
-    > Mail: 872648180@qq.com 
+    > Mail: 872648180@qq.com
     > Created Time: Sat Oct 14 14:23:18 2023
  ************************************************************************/
 
@@ -21,13 +21,16 @@
 
 int test_base()
 {
+#define KER_INFO_SZ 100
+
     FILE *fd_0;
     int fd_1;
     char *user_info = "this is user info";
-    char kernel_info[100];
+    char kernel_info[KER_INFO_SZ];
     unsigned long request = 0;
     unsigned long req_ack = 0;
 
+    memset(kernel_info, 0, KER_INFO_SZ);
     fd_0 = fopen(DEVNAME_0, "r+");
     fwrite(user_info, 1, strlen(user_info), fd_0);
     fread(kernel_info, 1, 50, fd_0);
