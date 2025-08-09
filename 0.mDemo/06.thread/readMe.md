@@ -576,3 +576,133 @@ int my_thread_fn(void *arg)
     return 0;
 }
 ```
+
+## 资源释放
+
+---
+
+### 1. `task_struct` 的资源释放
+
+* **作用**：Linux 内核中表示进程/线程的核心结构。
+* **生命周期管理**：
+  * 由内核自动管理，绑定于进程生命周期。
+  * 进程退出时，内核会自动释放 `task_struct` 及其相关资源（如内存映射、文件描述符等）。
+  * 仅当所有引用计数为0时，才真正释放。
+* **是否需手动释放？**
+  **不需要。** 由内核自动管理，开发者无需手动释放。
+
+---
+
+### 2. `kthread_worker` 的资源释放
+
+* **作用**：用于管理内核线程池，串行执行内核工作队列的工作。
+* **创建方式 & 生命周期**：
+  * **动态创建**：通过 `kthread_worker_create()` 分配，内核线程动态生成。
+  * **静态创建**：如 `static struct kthread_worker my_worker`，内存静态分配，无动态释放。
+* **资源释放**：
+  * **动态创建的 `kthread_worker`**
+    * 必须调用 `kthread_worker_destroy()` 停止线程并释放资源。
+    * 内部调用 `kthread_stop()` 停止线程后，释放内存。
+  * **静态创建的 `kthread_worker`**
+    * 不需调用销毁函数，静态内存由编译期分配，线程资源可通过调用 `kthread_worker_init()` 初始化。
+    * 一般不做销毁，直接用即可。
+* **是否需手动释放？**
+  * 动态创建：**需要手动停止并销毁**
+  * 静态创建：**不需要销毁**
+
+---
+
+### 3. `work_struct` 的资源释放
+
+* **作用**：表示一个可延迟执行的工作任务。
+* **生命周期 & 内存分配**：
+  * **静态分配**（全局变量或栈变量）：内存自动管理，随模块卸载或函数结束释放。
+  * **动态分配**（如 `kmalloc`）：内存需手动释放。
+* **资源释放步骤**：
+  * 保证工作已经完成或取消，调用 `cancel_work_sync()` 等待工作执行完毕。
+  * **动态分配的内存**：需在工作完成后调用 `kfree()` 释放内存。
+  * **静态分配**：无需额外释放。
+* **是否需手动释放？**
+  * 静态分配：**不需要释放**
+  * 动态分配：**需要取消工作并释放内存**
+
+---
+
+### 关键总结表
+
+| 结构体           | 创建方式   | 需手动释放？ | 手动释放操作                               |
+| ---------------- | ---------- | ------------ | ------------------------------------------ |
+| `task_struct`    | 由内核管理 | 否           | 内核自动释放                               |
+| `kthread_worker` | 动态创建   | 是           | 调用 `kthread_worker_destroy()` 停止并释放 |
+| `kthread_worker` | 静态创建   | 否           | 无需销毁，静态分配                         |
+| `work_struct`    | 动态分配   | 是           | 调用 `cancel_work_sync()` + `kfree()`      |
+| `work_struct`    | 静态分配   | 否           | 无需释放                                   |
+
+
+## 关于 kthread_stop
+
+---
+
+### 1. `task_struct` (kthread)
+
+* **背景：**
+  `task_struct` 代表内核中的线程或进程，你用 `kthread_create()` 创建的内核线程，
+  就是用 `task_struct` 表示的。
+* **什么时候需要调用 `kthread_stop`？**
+  只要你创建了内核线程（kthread），并且不再需要它时，都应该调用 `kthread_stop`
+  来安全停止它。
+  这是停止线程的标准接口，会告诉线程停止运行（让 `kthread_should_stop()` 返回真），
+  并等待线程函数返回。
+* **总结：**
+  你负责启动线程也必须负责调用 `kthread_stop` 停止线程，避免线程永远运行造成资源泄漏。
+
+---
+
+### 2. `kthread_worker`
+
+* **背景：**
+  * `kthread_worker` 是一种封装了内核线程的工作池对象，通常由 `kthread_worker_create()`
+    动态创建。
+* **什么时候需要调用 `kthread_stop`？**
+  * *不直接调用 `kthread_stop`*。调用的是 `kthread_worker_destroy()`，它内部会自动调用
+    `kthread_stop()` 来停止对应的内核线程。
+* **静态 vs 动态**
+  * **动态创建的 `kthread_worker`**（调用了 `kthread_worker_create`）需要在不再使用时
+    调用 `kthread_worker_destroy()`，间接调用 `kthread_stop` 来停止线程。
+  * **静态定义的 `kthread_worker`** （例如 `static struct kthread_worker worker;`）
+    一般不需要调用销毁函数，线程随模块退出自动释放。
+* **总结：**
+  * 不要直接调用 `kthread_stop`，调用 `kthread_worker_destroy()` 即可，动态创建的
+    必须手动销毁，静态的可不用。
+
+---
+
+### 3. `work_struct`
+
+* **背景：**
+  * `work_struct` 是内核工作队列里的任务单元，不直接表示线程，而是一个调度单元，
+    内核线程负责执行。
+* **什么时候需要调用 `kthread_stop`？**
+  * **不需要**。`work_struct` 本身没有独立线程，它是被内核的工作线程池执行的。
+    只需管理好工作本身：
+  * 用 `cancel_work_sync()` 确保工作不再运行（同步取消），
+  * 对动态分配的 `work_struct` 负责释放内存。
+* **总结：**
+  * `work_struct` 不涉及 `kthread_stop`，它依赖内核工作线程池，用户管理的是工作本身
+    的取消和资源释放。
+
+---
+
+### 总结：
+
+| 结构体                   | 调 `kthread_stop` | 具体操作                             | 备注                                                 |
+| ------------------------ | ----------------- | ------------------------------------ | ---------------------------------------------------- |
+| `task_struct`（kthread） | 是                | 创建后停止时调用 `kthread_stop()`    | 自己创建的内核线程，必须停止避免泄漏                 |
+| `kthread_worker`         | 否                | 销毁时调用 `kthread_worker_destroy()`| `kthread_worker_destroy` 内部调用了 `kthread_stop()` |
+| `work_struct`            | 否                | 取消工作用 `cancel_work_sync()`      | 由内核工作线程池调度执行，无独立线程                 |
+
+
+* **自己用 `kthread_create` 创建线程，必须调用 `kthread_stop` 停止线程。**
+* **使用 `kthread_worker` 时，调用 `kthread_worker_destroy`，它内部负责调用 `kthread_stop`。**
+* **管理 `work_struct` 时，不用管 `kthread_stop`，只需确保工作执行完成或取消。**
+

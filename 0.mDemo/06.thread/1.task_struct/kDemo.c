@@ -28,6 +28,8 @@ static char *exit_desc = "default exit desc";
 module_param(init_desc, charp, S_IRUGO);
 module_param(exit_desc, charp, S_IRUGO);
 
+struct task_struct *task;
+
 static int m_chrdev_open(struct inode *inode, struct file *file);
 static int m_chrdev_release(struct inode *inode, struct file *file);
 static long m_chrdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
@@ -118,7 +120,6 @@ static int __init m_chr_init(void)
 {
     int err, idx;
     dev_t devno;
-    struct task_struct *task;
 
     /* 可以使用 cat /dev/kmsg 实时查看打印 */
     printk(KERN_INFO "module %s init desc:%s\n", __func__, init_desc);
@@ -157,14 +158,14 @@ static int __init m_chr_init(void)
     }
 
     /* create kthread */
-    task = kthread_create(m_kthread_func, NULL, "my_kthread");  
-    if (IS_ERR(task)) {  
-        printk(KERN_ERR "Failed to create kthread\n");  
-        return PTR_ERR(task);  
-    }  
+    task = kthread_create(m_kthread_func, NULL, "my_kthread");
+    if (IS_ERR(task)) {
+        printk(KERN_ERR "Failed to create kthread\n");
+        return PTR_ERR(task);
+    }
 
     /* wakeupkthread */
-    wake_up_process(task);  
+    wake_up_process(task);
 
     /* 也可以使用 kthread_run 直接创建并启动线程，相当于 kthread_create + wake_up_process */
 
@@ -178,10 +179,8 @@ static void __exit m_chr_exit(void)
 
     printk(KERN_INFO "module %s exit desc:%s\n", __func__, exit_desc);
 
-    /*
-     * 这里通常不需要显式停止kthread，因为模块卸载时所有资源都会被清理
-     * 但如果需要，可以使用kthread_stop(task)来停止特定的kthread
-     */
+    // 停止线程
+    kthread_stop(task);
 
     for (idx = 0; idx < MAX_DEV; idx++) {
         device_destroy(m_chrdev_class, MKDEV(dev_major, idx));
