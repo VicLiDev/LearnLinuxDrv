@@ -109,8 +109,8 @@ static ssize_t m_chrdev_read(struct file *file, char __user *buf, size_t count, 
 
 static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t count, loff_t *offset)
 {
-    size_t maxdatalen = 30, ncopied;
     uint8_t databuf[30];
+    size_t maxdatalen = sizeof(databuf) - 1, ncopied;
 
     printk("Writing device: %d\n", MINOR(file->f_path.dentry->d_inode->i_rdev));
 
@@ -134,13 +134,18 @@ static ssize_t m_chrdev_write(struct file *file, const char __user *buf, size_t 
 }
 
 /* 线程的工作函数 */
-int thread_func(void *data)
+static int thread_func(void *data)
 {
     /* 模拟一些工作 */
     udelay(1000);
 
     /* 完成工作，唤醒等待的线程 */
     complete(&my_completion);
+
+    /* 等待线程停止信号 */
+    while (!kthread_should_stop()) {
+        schedule();
+    }
 
     return 0;
 }
@@ -198,6 +203,8 @@ static int __init m_chr_init(void)
 
     /* 等待线程完成工作 */
     wait_for_completion(&my_completion);
+    // 如果不想在 thread_func 中等待停止信号，也可以在这里清空指针
+    // thread = NULL;
     pr_info("Thread has completed its work\n");
 
     return 0;
@@ -211,7 +218,7 @@ static void __exit m_chr_exit(void)
     printk(KERN_INFO "module %s exit desc:%s\n", __func__, exit_desc);
 
     /* 如果线程还在运行，停止它 */
-    if (!IS_ERR(thread))
+    if (thread && !IS_ERR(thread))
         kthread_stop(thread);
 
     /* 完成变量不需要清理 */

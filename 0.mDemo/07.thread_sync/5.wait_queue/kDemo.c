@@ -30,7 +30,7 @@ static DECLARE_WAIT_QUEUE_HEAD(wq); /* 声明并初始化等待队列 */
 static int condition_timeout = 0; /* 条件变量 */
 
 /* demo 2 */
-struct task_struct *thread;
+struct task_struct *thread = NULL;
 wait_queue_head_t wait_queue;
 int condition = 0;
 
@@ -166,7 +166,7 @@ static int waiter_thread_fn(void *data)
 }
 
 /* 线程的工作函数 */
-int thread_func(void *data)
+static int thread_func(void *data)
 {
     while (!kthread_should_stop()) {
         /* 进入可中断的等待状态，直到condition变为非零 */
@@ -242,6 +242,7 @@ static int __init m_chr_init(void)
     thread = kthread_run(thread_func, NULL, "my_thread");
     if (IS_ERR(thread)) {
         pr_err("Failed to create thread\n");
+        thread = NULL;
         return PTR_ERR(thread);
     }
 
@@ -256,8 +257,10 @@ static void __exit m_chr_exit(void)
     printk(KERN_INFO "module %s exit desc:%s\n", __func__, exit_desc);
 
     /* 停止线程 */
-    if (!IS_ERR(thread))
+    if (thread) {
         kthread_stop(thread);
+        thread = NULL;
+    }
 
     for (idx = 0; idx < MAX_DEV; idx++) {
         device_destroy(m_chrdev_class, MKDEV(dev_major, idx));
