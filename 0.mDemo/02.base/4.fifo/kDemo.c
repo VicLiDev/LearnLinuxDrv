@@ -33,6 +33,9 @@ module_param(exit_desc, charp, S_IRUGO);
 #define USE_INIT_DECLARE
 // #define USE_INIT_DEFINE
 // #define USE_INIT_DYNAMIC
+// #define USE_INIT_DYNAMIC2
+
+#define USE_INIT_PTR
 
 /*
  * 在 kernel 中 DECLARE 和 DEFINE 的关系为：
@@ -69,6 +72,19 @@ module_param(exit_desc, charp, S_IRUGO);
  * 	ptrtype const	*ptr_const; \
  * }
  *
+ * #define __STRUCT_KFIFO(type, size, recsize, ptrtype) \
+ *  { \
+ *  	__STRUCT_KFIFO_COMMON(type, recsize, ptrtype); \
+ *  	type		buf[((size < 2) || (size & (size - 1))) ? -1 : size]; \
+ *  }
+ *
+ * #define STRUCT_KFIFO(type, size) \
+ *  struct __STRUCT_KFIFO(type, size, 0, type)
+ *
+ * #define DECLARE_KFIFO(fifo, type, size)	STRUCT_KFIFO(type, size) fifo
+ *
+ * 简单理解，是声明了一个 指定结构的匿名变量，这个变量会与 kernel 的fifo 结构同步对其
+ *
  */
 #ifdef USE_INIT_DECLARE
 DECLARE_KFIFO(m_fifo, char, FIFO_SIZE);
@@ -81,6 +97,18 @@ static DEFINE_KFIFO(m_fifo, char, FIFO_SIZE);
 #ifdef USE_INIT_DYNAMIC
 static struct kfifo m_fifo;
 static char buffer[FIFO_SIZE];
+#endif
+
+#ifdef USE_INIT_DYNAMIC2
+static struct kfifo m_fifo;
+static char buffer[FIFO_SIZE];
+#endif
+
+#ifdef USE_INIT_PTR
+struct m_cls {
+    int id;
+};
+static DECLARE_KFIFO_PTR(cls_fifo, struct m_cls *);
 #endif
 
 static DEFINE_SPINLOCK(fifo_lock);
@@ -127,13 +155,6 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
 {
     printk("M_CHRDEV: Device open\n");
 
-#ifdef USE_INIT_DYNAMIC
-    if (kfifo_init(&m_fifo, buffer, sizeof(buffer)) != 0) {
-        printk(KERN_ERR "Failed to initialize kfifo\n");
-        return -1;
-    }
-#endif
-
 #ifdef USE_INIT_DECLARE
     /*
      * INIT_KFIFO 是 用于初始化通过 DECLARE_KFIFO 静态声明的 kfifo 缓冲区的宏。
@@ -156,12 +177,43 @@ static int m_chrdev_open(struct inode *inode, struct file *file)
     INIT_KFIFO(m_fifo);
 #endif
 
+#ifdef USE_INIT_DYNAMIC
+    if (kfifo_init(&m_fifo, buffer, sizeof(buffer)) != 0) {
+        printk(KERN_ERR "Failed to initialize kfifo\n");
+        return -1;
+    }
+#endif
+
+#ifdef USE_INIT_DYNAMIC2
+    if (kfifo_alloc(&m_fifo, sizeof(buffer), GFP_KERNEL)) {
+        pr_err("kfifo_alloc failed\n");
+        return -1;
+    }
+#endif
+
+#ifdef USE_INIT_PTR
+    /* 分配 FIFO（容量 16 个元素） */
+    if (kfifo_alloc(&cls_fifo, 16, GFP_KERNEL)) {
+        pr_err("Failed to allocate kfifo\n");
+    }
+#endif
+
     return 0;
 }
 
 static int m_chrdev_release(struct inode *inode, struct file *file)
 {
     printk("M_CHRDEV: Device close\n");
+
+#ifdef USE_INIT_DYNAMIC2
+    kfifo_free(&m_fifo);
+#endif
+
+#ifdef USE_INIT_PTR
+    /* 释放 FIFO */
+    kfifo_free(&cls_fifo);
+#endif
+
     return 0;
 }
 
@@ -200,6 +252,30 @@ static int fifo_demo(void)
     // 6. 使用 kfifo_get() 逐个取出
     while (kfifo_get(&m_fifo, &ch))
         pr_info("kfifo_get: got %c\n", ch);
+
+#ifdef USE_INIT_PTR
+    struct m_cls *node, *tmp;
+    /* 模拟存入几个节点指针 */
+    for (i = 0; i < 3; i++) {
+        node = kmalloc(sizeof(*node), GFP_KERNEL);
+        if (!node)
+            return -ENOMEM;
+        node->id = i;
+
+        if (!kfifo_put(&cls_fifo, node)) {
+            pr_err("FIFO is full, cannot insert node %d\n", i);
+            kfree(node);
+            break;
+        }
+        pr_info("Inserted node %d into FIFO\n", i);
+    }
+
+    /* 取出节点指针并释放 */
+    while (kfifo_get(&cls_fifo, &tmp)) {
+        pr_info("Got node %d from FIFO\n", tmp->id);
+        kfree(tmp);
+    }
+#endif
 
     spin_unlock(&fifo_lock);
     return 0;
