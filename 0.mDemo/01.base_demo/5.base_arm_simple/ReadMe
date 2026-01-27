@@ -1,0 +1,46 @@
+学习驱动开发的所有demo示例
+
+这是 4.base_arm 的简化版本，只编译一个内核模块 (kDemo)。
+
+支持两种构建模式：
+- Android 模式 (默认): 使用 Clang 编译 Android 内核模块
+- Linux 模式: 使用 GCC 编译 Linux 内核模块
+
+使用方法：
+1. 编译 Android 内核模块: make modules_android 或 make BUILD_MODE=android
+2. 编译 Linux 内核模块: make modules_linux 或 make BUILD_MODE=linux
+3. 加载模块: make BUILD_MODE=android|linux init
+4. 运行测试: make BUILD_MODE=android|linux test
+5. 卸载模块: make BUILD_MODE=android|linux exit
+6. 清理构建: make clean
+
+注意事项：
+- 需要根据实际情况修改 Makefile 中的内核路径和工具链路径
+- init/exit/test 目标需要通过 ADB 连接到设备
+- 使用 adbs 命令获取 ADB 设备命令
+
+
+不同的平台，可能需要处理如下补丁的问题
+
+diff --git a/0.mDemo/1.base/kDemo.c b/0.mDemo/1.base/kDemo.c
+index a9ffb76..505c0c0 100644
+--- a/0.mDemo/1.base/kDemo.c
++++ b/0.mDemo/1.base/kDemo.c
+@@ -155,7 +155,7 @@ static struct class *m_chrdev_class = NULL;
+ // array of m_chr_device_data for
+ static struct m_chr_device_data m_chrdev_data[MAX_DEV];
+
+-static int m_chrdev_uevent(struct device *dev, struct kobj_uevent_env *env)
++static int m_chrdev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+ {
+     add_uevent_var(env, "DEVMODE=%#o", 0666);
+     return 0;
+@@ -258,7 +258,7 @@ static int __init m_chr_init(void)
+     // create sysfs class
+     // 创建设备节点的时候也用到了class，因此在/sys/class/m_chrdev_cls下可以看到
+     // 链接到设备的软链接
+-    m_chrdev_class = class_create(THIS_MODULE, "m_chrdev_cls");
++    m_chrdev_class = class_create("m_chrdev_cls");
+     m_chrdev_class->dev_uevent = m_chrdev_uevent;
+
+     // Create necessary number of the devices
