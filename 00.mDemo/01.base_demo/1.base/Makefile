@@ -77,7 +77,7 @@ modules:
 
 .PHONY: clean
 clean:
-	@echo "======> build <======"
+	@echo "======> clean <======"
 	rm -rf *.o *~ core .depend .*.cmd .*.o.d *.mod *.ko *.mod.c .tmp_versions Module* modules*
 	rm $(USERDEMO_EXE)
 
