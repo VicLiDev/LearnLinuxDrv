@@ -70,6 +70,7 @@ PWD := $(shell pwd)
 
 .PHONY: modules
 modules:
+	@echo "======> build base demo <======"
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 	gcc -o $(USERDEMO_EXE) $(USERDEMO)
 
