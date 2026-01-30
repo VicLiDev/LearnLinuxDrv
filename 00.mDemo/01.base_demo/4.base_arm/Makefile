@@ -55,7 +55,7 @@ MYMOD_2 := kDemo_2
 BUILD_MODE ?= android
 
 # Android kernel 配置
-ANDROID_KERNELDIR ?= ${HOME}/Projects/kernel3
+ANDROID_KERNELDIR ?= ${HOME}/Projects/kernel
 ANDROID_TOOLCHAIN_PATH ?= ${HOME}/Projects/prebuilts/toolchains/linux-x86_rk/clang-r487747c/bin
 ANDROID_CROSS_COMPILE ?= aarch64-linux-gnu-
 
