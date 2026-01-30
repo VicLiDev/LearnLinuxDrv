@@ -1,0 +1,8 @@
+# ignore build tmp file
+*.o
+*.cmd
+*.mod
+*.mod.c
+*.mod.o
+*.order
+*.symvers
