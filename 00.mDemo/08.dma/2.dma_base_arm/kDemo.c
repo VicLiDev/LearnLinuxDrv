@@ -468,9 +468,13 @@ static int dma_map_sg_dev(struct device *dev, struct m_chr_device_data *dd,
         struct scatterlist *sg;
         int i;
         for_each_sg(dd->sg_table.sgl, sg, ret, i) {
-            printk(KERN_INFO "DMA:   sg[%d] dma addr = %#llx, len = %u\n",
-                   i, (u64)sg_dma_address(sg),
-                   sg_dma_len(sg));
+            phys_addr_t phys_addr = sg_phys(sg);
+            dma_addr_t dma_addr = sg_dma_address(sg);
+            unsigned int sg_len = sg_dma_len(sg);
+
+            printk(KERN_INFO "DMA:   sg[%d]: phys_addr=0x%pa (below 4G: %s), dma_addr/iova=0x%pad, len=0x%x\n",
+                   i, &phys_addr, phys_addr < SZ_4G ? "yes" : "no",
+                   &dma_addr, sg_len);
         }
     }
 
