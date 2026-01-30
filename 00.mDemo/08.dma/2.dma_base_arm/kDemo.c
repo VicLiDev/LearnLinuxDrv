@@ -408,7 +408,11 @@ static int dma_map_sg_dev(struct device *dev, struct m_chr_device_data *dd,
     }
 
     for (i = 0; i < nents; i++) {
-        dd->sg_pages[i] = alloc_page(GFP_KERNEL);
+        /*
+         * For ARM, use GFP_DMA to ensure allocation is in DMA-capable zone.
+         * This ensures the physical address is within the device's DMA constraints.
+         */
+        dd->sg_pages[i] = alloc_page(GFP_KERNEL | GFP_DMA);
         if (!dd->sg_pages[i]) {
             printk(KERN_ERR "DMA: Failed to allocate page %d\n", i);
             /* Free previously allocated pages */

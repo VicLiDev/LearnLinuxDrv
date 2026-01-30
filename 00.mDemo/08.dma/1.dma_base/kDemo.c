@@ -402,7 +402,8 @@ static int dma_map_sg_dev(struct device *dev, struct m_chr_device_data *dd,
     }
 
     for (i = 0; i < nents; i++) {
-        dd->sg_pages[i] = alloc_page(GFP_KERNEL);
+        /* GFP_DMA32 ensures allocation is below 4GB on x86_64 */
+        dd->sg_pages[i] = alloc_page(GFP_KERNEL | GFP_DMA32);
         if (!dd->sg_pages[i]) {
             printk(KERN_ERR "DMA: Failed to allocate page %d\n", i);
             /* Free previously allocated pages */
