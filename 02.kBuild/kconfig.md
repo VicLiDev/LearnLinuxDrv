@@ -368,18 +368,19 @@ config ARCH_MMAP_RND_BITS_MAX
 
 ### 依赖关系 (depends on)
 
-当前菜单项**依赖**的其他菜单项。只有所有依赖都满足时，当前项才会显示。
+当前配置项依赖的其他**配置符号**（即其他 `config` 语句定义的符号名）。
+只有所有依赖条件求值为真时，当前项才会在菜单中显示。
 
 ```kconfig
-# 单个依赖
+# 以下 MMU、ARCH_FOO 都是其他地方通过 config 定义的配置符号
 config ARCH_MULTIPLATFORM
     bool "Allow multiple platforms"
-    depends on MMU
+    depends on MMU            # MMU 必须为 y，当前项才可见
 
-# 多个依赖用 && 连接
+# 多个依赖用 &&、||、! 组合
 config SMP
     bool "Symmetric Multi-Processing"
-    depends on MMU && !ARCH_FOO
+    depends on MMU && !ARCH_FOO   # MMU 为 y 且 ARCH_FOO 未选中时才可见
 ```
 
 `depends on` 也可以用行内 `if` 简写：
@@ -393,6 +394,36 @@ config FOO
 config FOO
     bool "Foo support" if BAR
 ```
+
+以下是一个完整的自包含示例，展示了 `depends on` 如何引用其他 `config` 符号：
+
+```kconfig
+# ---- 先定义被依赖的符号 ----
+
+config HAS_HW_DMA
+    bool "Platform has DMA hardware"
+
+config HAS_MMU
+    bool "Platform has MMU"
+
+config ARCH_FOO
+    bool "Enable FOO architecture"
+
+# ---- 再定义依赖它们的符号 ----
+
+# 只有 HAS_HW_DMA 为 y 时，USING_DMA 才会出现在菜单中
+config USING_DMA
+    bool "Enable DMA support"
+    depends on HAS_HW_DMA
+
+# 需要 HAS_MMU 为 y，且 ARCH_FOO 未被选中时，SMP 才可见
+config SMP
+    bool "Symmetric Multi-Processing"
+    depends on HAS_MMU && !ARCH_FOO
+```
+
+> **注意**：被引用的符号（如 `HAS_HW_DMA`）必须在某个 Kconfig 文件中有对应的
+> `config HAS_HW_DMA` 定义，`depends on` 只是引用它，不会自动创建。
 
 ### 反向依赖 (select)
 
