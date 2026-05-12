@@ -6,3 +6,4 @@
 *.mod.o
 *.order
 *.symvers
+*.omc
